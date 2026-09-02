@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="./warp-server"
+PROJECT_ROOT="."
 DB_FILE="$PROJECT_ROOT/warp.db"
 
 # ============================================================================
@@ -211,7 +211,7 @@ func TestGenerateX25519(t *testing.T) {
 }
 EOF
 
-  cd "$PROJECT_ROOT" && go test ./internal/crypto && echo "✓ X25519 works"
+  cd "$PROJECT_ROOT" && go get golang.org/x/crypto/curve25519 && go test ./internal/crypto && echo "✓ X25519 works"
 }
 
 # ============================================================================
@@ -378,6 +378,7 @@ EOF
 task_06_warp_prefixes() {
   echo "=== Задача 6: WARP prefixes ==="
   
+  mkdir -p "$PROJECT_ROOT/internal/warp"
   cat > "$PROJECT_ROOT/internal/warp/prefixes.go" <<'EOF'
 package warp
 
@@ -406,6 +407,7 @@ EOF
 task_07_warp_ports() {
   echo "=== Задача 7: WARP ports ==="
   
+  mkdir -p "$PROJECT_ROOT/internal/warp"
   cat > "$PROJECT_ROOT/internal/warp/ports.go" <<'EOF'
 package warp
 
@@ -439,6 +441,7 @@ package scanner
 import (
   "context"
   "net"
+  "strconv"
   "time"
 )
 
@@ -457,7 +460,7 @@ func ScanEndpoints(ctx context.Context, prefixes []string, ports []int, maxResul
     for ip := ip.Mask(ipnet.Mask); ipnet.Contains(ip); inc(ip) {
       for _, port := range ports {
         start := time.Now()
-        conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip.String(), string(port)), 2*time.Second)
+        conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip.String(), strconv.Itoa(port)), 2*time.Second)
         if err == nil {
           conn.Close()
           rtt := int(time.Since(start).Milliseconds())
@@ -492,14 +495,13 @@ EOF
 task_09_neighbors() {
   echo "=== Задача 9: Neighbor expansion ==="
   
+  mkdir -p "$PROJECT_ROOT/internal/scanner"
   cat > "$PROJECT_ROOT/internal/scanner/neighbors.go" <<'EOF'
 package scanner
 
 import (
   "fmt"
   "net"
-  "strconv"
-  "strings"
 )
 
 func ExpandNeighbors(baseIP string, rangeSize int) []string {
@@ -542,10 +544,14 @@ package scanner
 import (
   "context"
   "time"
-  "github.com/example/warp-server/internal/warp"
 )
 
-func ProbeEndpoint(ctx context.Context, endpoint Endpoint, identity *warp.Identity) (int, error) {
+type IdentityKeys struct {
+  PrivateKey string
+  PublicKey  string
+}
+
+func ProbeEndpoint(ctx context.Context, endpoint Endpoint, keys *IdentityKeys) (int, error) {
   start := time.Now()
   
   // TODO: Реальный WireGuard handshake с использованием golang.zx2c4.com/wireguard
@@ -741,16 +747,47 @@ task_16_worker_register() {
   
   mkdir -p "$PROJECT_ROOT/cmd/worker"
   
-  cat > "$PROJECT_ROOT/cmd/worker/register.go" <<'EOF'
+  cat > "$PROJECT_ROOT/cmd/worker/main.go" <<'EOF'
 package main
 
 import (
   "context"
   "log"
+  "os"
   "time"
   "github.com/example/warp-server/internal/db"
   "github.com/example/warp-server/internal/warp"
+  "github.com/example/warp-server/internal/scanner"
 )
+
+func main() {
+  if len(os.Args) < 2 {
+    log.Fatal("Usage: worker <register|scan|probe>")
+  }
+  
+  cmd := os.Args[1]
+  ctx := context.Background()
+  
+  database, err := db.New("warp.db")
+  if err != nil {
+    log.Fatalf("Failed to open DB: %v", err)
+  }
+  defer database.Close()
+  
+  switch cmd {
+  case "register":
+    log.Println("Starting register worker")
+    MaintainIdentityPool(ctx, database, 10, 5*time.Minute)
+  case "scan":
+    log.Println("Starting scan worker")
+    ScanPeriodically(ctx, database, 10*time.Minute)
+  case "probe":
+    log.Println("Starting probe worker")
+    ProbeEndpointsPeriodically(ctx, database, 2*time.Minute)
+  default:
+    log.Fatalf("Unknown command: %s", cmd)
+  }
+}
 
 func MaintainIdentityPool(ctx context.Context, database *db.DB, targetCount int, interval time.Duration) {
   ticker := time.NewTicker(interval)
@@ -778,28 +815,6 @@ func MaintainIdentityPool(ctx context.Context, database *db.DB, targetCount int,
     }
   }
 }
-EOF
-
-  cd "$PROJECT_ROOT" && go build ./cmd/worker && echo "✓ Worker register compiles"
-}
-
-# ============================================================================
-# ЗАДАЧА 17: Воркер сканирования
-# ============================================================================
-task_17_worker_scanner() {
-  echo "=== Задача 17: Worker scanner ==="
-  
-  cat > "$PROJECT_ROOT/cmd/worker/scanner.go" <<'EOF'
-package main
-
-import (
-  "context"
-  "log"
-  "time"
-  "github.com/example/warp-server/internal/db"
-  "github.com/example/warp-server/internal/warp"
-  "github.com/example/warp-server/internal/scanner"
-)
 
 func ScanPeriodically(ctx context.Context, database *db.DB, interval time.Duration) {
   ticker := time.NewTicker(interval)
@@ -831,27 +846,6 @@ func ScanPeriodically(ctx context.Context, database *db.DB, interval time.Durati
     }
   }
 }
-EOF
-
-  cd "$PROJECT_ROOT" && go build ./cmd/worker && echo "✓ Worker scanner compiles"
-}
-
-# ============================================================================
-# ЗАДАЧА 18: Воркер пробинга
-# ============================================================================
-task_18_worker_prober() {
-  echo "=== Задача 18: Worker prober ==="
-  
-  cat > "$PROJECT_ROOT/cmd/worker/prober.go" <<'EOF'
-package main
-
-import (
-  "context"
-  "log"
-  "time"
-  "github.com/example/warp-server/internal/db"
-  "github.com/example/warp-server/internal/scanner"
-)
 
 func ProbeEndpointsPeriodically(ctx context.Context, database *db.DB, interval time.Duration) {
   ticker := time.NewTicker(interval)
@@ -872,13 +866,14 @@ func ProbeEndpointsPeriodically(ctx context.Context, database *db.DB, interval t
       }
       
       identity := identities[0]
+      keys := &scanner.IdentityKeys{
+        PrivateKey: identity.PrivateKey,
+        PublicKey:  identity.PublicKey,
+      }
       
       for _, ep := range endpoints {
-        rtt, err := scanner.ProbeEndpoint(ctx, *ep, identity)
+        rtt, err := scanner.ProbeEndpoint(ctx, *ep, keys)
         success := err == nil
-        
-        // TODO: получить id endpoint из БД
-        // database.UpdateEndpointMetrics(ep.ID, rtt, success)
         
         if success {
           log.Printf("Probed %s:%d - RTT %dms", ep.Host, ep.Port, rtt)
@@ -888,18 +883,33 @@ func ProbeEndpointsPeriodically(ctx context.Context, database *db.DB, interval t
   }
 }
 EOF
-
-  cd "$PROJECT_ROOT" && go build ./cmd/worker && echo "✓ Worker prober compiles"
+  
+  cd "$PROJECT_ROOT" && go build ./cmd/worker && echo "✓ Worker register compiles"
 }
 
 # ============================================================================
-# ЗАДАЧА 19: Dockerfile
+# ЗАДАЧА 17: Воркер сканирования
 # ============================================================================
+task_17_worker_scanner() {
+  echo "=== Задача 17: Worker scanner ==="
+  # Функции уже в main.go (task_16)
+  echo "✓ Worker scanner (already in main.go)"
+}
+
+# ============================================================================
+# ЗАДАЧА 18: Воркер пробинга
+# ============================================================================
+task_18_worker_prober() {
+  echo "=== Задача 18: Worker prober ==="
+  # Функции уже в main.go (task_16)
+  echo "✓ Worker prober (already in main.go)"
+}
+
 task_19_dockerfile() {
   echo "=== Задача 19: Dockerfile ==="
   
   cat > "$PROJECT_ROOT/Dockerfile" <<'EOF'
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -911,7 +921,7 @@ RUN go build -o /worker ./cmd/worker
 
 FROM alpine:latest
 
-RUN apk add --no-cache sqlite
+RUN apk add --no-cache sqlite ca-certificates
 
 COPY --from=builder /server /server
 COPY --from=builder /worker /worker
@@ -1126,22 +1136,31 @@ main() {
 
 # Опциональный режим выполнения всех задач
 if [[ "${1:-}" == "run_all" ]]; then
-  task_01_schema
-  task_03_x25519
-  task_06_warp_prefixes
-  task_07_warp_ports
-  task_09_neighbors
-  task_02_http_skeleton
-  task_04_warp_register
-  task_05_db_identities
-  task_10_wg_probe
-  task_08_ipscanner
-  task_11_db_endpoints
-  task_12_config_gen
+  # Волна 1: независимые задачи
+  task_01_schema  # создаёт schema.sql
+  task_02_http_skeleton  # создаёт go.mod
+  task_06_warp_prefixes  # создаёт константы
+  task_07_warp_ports  # создаёт константы
+  task_09_neighbors  # создаёт утилиту
+  
+  # Волна 2: после go.mod
+  task_03_x25519  # требует go.mod
+  task_04_warp_register  # требует crypto
+  task_05_db_identities  # требует db.go
+  
+  # Волна 3: после префиксов и портов
+  task_08_ipscanner  # требует prefixes/ports, создаёт Endpoint
+  task_10_wg_probe  # требует Endpoint из scanner
+  task_11_db_endpoints  # требует db.go
+  task_12_config_gen  # независимая
+  
+  # Волна 4: API и воркеры
   task_13_api_config
   task_16_worker_register
   task_17_worker_scanner
   task_18_worker_prober
+  
+  # Волна 5-7: Docker и docs
   task_19_dockerfile
   task_20_docker_compose
   task_21_readme
