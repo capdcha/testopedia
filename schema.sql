@@ -1,6 +1,3 @@
--- WARP Server Database Schema
--- SQLite
-
 CREATE TABLE IF NOT EXISTS identities (
   id TEXT PRIMARY KEY,
   private_key TEXT NOT NULL,
