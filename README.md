@@ -2,27 +2,6 @@
 
 Автономный сервер для генерации WARP/AmneziaWG конфигураций.
 
-## Структура проекта
-
-```
-warp-server/
-├── cmd/
-│   ├── server/        # HTTP API сервер
-│   └── worker/        # Фоновые воркеры
-├── internal/
-│   ├── api/           # HTTP handlers
-│   ├── crypto/        # X25519 keypair генерация
-│   ├── db/            # SQLite операции
-│   ├── scanner/       # IP scanner, WG probe
-│   └── warp/          # WARP регистрация, конфиг генерация
-├── tests/             # E2E тесты
-├── docs/              # Документация
-├── schema.sql         # Схема БД
-├── warp-server-plan.md    # Детальный план задач
-├── tasks-prompts.md       # Промпты для агентов
-└── tasks-bash.sh          # Bash-скрипт выполнения
-```
-
 ## Быстрый старт
 
 ```bash
@@ -33,14 +12,21 @@ curl http://localhost:8080/config > warp.conf
 ## API
 
 - `GET /health` - статус сервиса
-- `GET /config` - получить AmneziaWG конфиг
-- `GET /api/identities` - список identity
+- `GET /config` - получить готовый AmneziaWG конфиг
+- `GET /api/identities` - список зарегистрированных identity
 - `GET /api/endpoints?alive=true` - живые endpoints
+
+## Архитектура
+
+- **API Server** - HTTP API на порту 8080
+- **Worker Register** - регистрация WARP identity (пул 10 шт)
+- **Worker Scanner** - сканирование WARP endpoints каждые 10 минут
+- **Worker Prober** - проверка живых endpoints каждые 2 минуты
 
 ## Разработка
 
-См. `warp-server-plan.md` для детального плана задач и `tasks-prompts.md` для промптов агентам.
-
-## Лицензия
-
-MIT
+```bash
+go test ./...
+go build ./cmd/server
+./server
+```
