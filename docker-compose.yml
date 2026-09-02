@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    command: /server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - DB_PATH=/data/warp.db
+    restart: unless-stopped
+  
+  worker-register:
+    build: .
+    command: /worker register
+    volumes:
+      - ./data:/data
+    environment:
+      - DB_PATH=/data/warp.db
+      - TARGET_COUNT=10
+      - INTERVAL=5m
+    restart: unless-stopped
+  
+  worker-scanner:
+    build: .
+    command: /worker scan
+    volumes:
+      - ./data:/data
+    environment:
+      - DB_PATH=/data/warp.db
+      - INTERVAL=10m
+    restart: unless-stopped
+  
+  worker-prober:
+    build: .
+    command: /worker probe
+    volumes:
+      - ./data:/data
+    environment:
+      - DB_PATH=/data/warp.db
+      - INTERVAL=2m
+    restart: unless-stopped
+
+volumes:
+  data:
