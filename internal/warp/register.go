@@ -6,6 +6,7 @@ import (
   "encoding/json"
   "fmt"
   "net/http"
+  "time"
   "github.com/example/warp-server/internal/crypto"
   "encoding/base64"
 )
@@ -44,7 +45,8 @@ func RegisterIdentity(ctx context.Context) (*Identity, error) {
   req.Header.Set("CF-Client-Version", "a-6.35-4471")
   req.Header.Set("User-Agent", "okhttp/3.12.1")
   
-  resp, err := http.DefaultClient.Do(req)
+  client := &http.Client{Timeout: 15 * time.Second}
+  resp, err := client.Do(req)
   if err != nil {
     return nil, err
   }

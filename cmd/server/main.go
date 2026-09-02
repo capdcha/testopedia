@@ -3,12 +3,17 @@ package main
 import (
   "log"
   "net/http"
+  "os"
   "github.com/example/warp-server/internal/api"
   "github.com/example/warp-server/internal/db"
 )
 
 func main() {
-  database, err := db.New("warp.db")
+  dbPath := os.Getenv("DB_PATH")
+  if dbPath == "" {
+    dbPath = "warp.db"
+  }
+  database, err := db.New(dbPath)
   if err != nil {
     log.Fatal(err)
   }

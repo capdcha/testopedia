@@ -18,4 +18,4 @@ COPY schema.sql /schema.sql
 
 EXPOSE 8080
 
-ENTRYPOINT ["/server"]
+CMD ["/server"]
