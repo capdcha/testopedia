@@ -2,31 +2,369 @@
 
 Автономный сервер для генерации WARP/AmneziaWG конфигураций.
 
-## Быстрый старт
-
-```bash
-docker-compose up -d
-curl http://localhost:8080/config > warp.conf
-```
-
-## API
-
-- `GET /health` - статус сервиса
-- `GET /config` - получить готовый AmneziaWG конфиг
-- `GET /api/identities` - список зарегистрированных identity
-- `GET /api/endpoints?alive=true` - живые endpoints
-
 ## Архитектура
 
-- **API Server** - HTTP API на порту 8080
-- **Worker Register** - регистрация WARP identity (пул 10 шт)
-- **Worker Scanner** - сканирование WARP endpoints каждые 10 минут
-- **Worker Prober** - проверка живых endpoints каждые 2 минуты
+Сервис состоит из 4 компонентов:
 
-## Разработка
+| Компонент | Описание | Порт/Интервал |
+|-----------|----------|---------------|
+| **API Server** | HTTP API для получения конфигов | :8080 |
+| **Worker Register** | Регистрация WARP identity в Cloudflare | каждые 5 мин |
+| **Worker Scanner** | Сканирование WARP endpoints (TCP + RTT) | каждые 10 мин |
+| **Worker Prober** | Проверка живости endpoints (WG handshake) | каждые 2 мин |
+
+Все компоненты используют общую SQLite БД (`warp.db`).
+
+---
+
+## Быстрый старт (Docker Compose)
+
+### Предварительные требования
+
+- Docker 20.10+
+- Docker Compose 2.0+
+
+### Запуск
 
 ```bash
-go test ./...
-go build ./cmd/server
-./server
+# 1. Клонировать репозиторий
+git clone https://github.com/deepinpoop/test.git
+cd test
+
+# 2. Запустить все сервисы
+docker-compose up -d
+
+# 3. Проверить статус
+curl http://localhost:8080/health
+# {"status":"ok"}
+
+# 4. Получить готовый AmneziaWG конфиг
+curl http://localhost:8080/config > warp.conf
+
+# 5. Использовать конфиг в AmneziaWG / WireGuard клиенте
 ```
+
+### Проверка работы воркеров
+
+```bash
+# Логи всех сервисов
+docker-compose logs -f
+
+# Только API
+docker-compose logs -f api
+
+# Только worker register
+docker-compose logs -f worker-register
+
+# Только worker scanner
+docker-compose logs -f worker-scanner
+
+# Только worker prober
+docker-compose logs -f worker-prober
+```
+
+### Остановка
+
+```bash
+docker-compose down
+
+# С удалением данных (БД)
+docker-compose down -v
+```
+
+---
+
+## Локальная разработка (без Docker)
+
+### Предварительные требования
+
+- Go 1.25+
+- SQLite3
+
+### Установка зависимостей
+
+```bash
+# В корне репозитория
+go mod tidy
+```
+
+### Инициализация БД
+
+```bash
+# Создать таблицы
+sqlite3 warp.db < schema.sql
+
+# Проверить
+sqlite3 warp.db ".tables"
+# identities  endpoints  configs
+```
+
+### Сборка и запуск
+
+```bash
+# Сборка
+go build ./cmd/server
+go build ./cmd/worker
+
+# Запуск API сервера (терминал 1)
+./server
+
+# Запуск worker register (терминал 2)
+./worker register
+
+# Запуск worker scanner (терминал 3)
+./worker scan
+
+# Запуск worker prober (терминал 4)
+./worker probe
+```
+
+### Проверка работы
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Получить конфиг
+curl http://localhost:8080/config > warp.conf
+
+# Список identity
+curl http://localhost:8080/api/identities
+
+# Список живых endpoints
+curl "http://localhost:8080/api/endpoints?alive=true"
+```
+
+---
+
+## Переменные окружения
+
+| Переменная | Описание | По умолчанию |
+|------------|----------|--------------|
+| `DB_PATH` | Путь к SQLite БД | `warp.db` |
+| `TARGET_COUNT` | Целевое кол-во identity в пуле | `10` |
+| `INTERVAL` | Интервал запуска воркера | см. ниже |
+
+Интервалы по умолчанию:
+- `worker register`: 5m
+- `worker scan`: 10m  
+- `worker probe`: 2m
+
+Переопределение через docker-compose.yml или при локальном запуске:
+```bash
+TARGET_COUNT=20 INTERVAL=2m ./worker register
+```
+
+---
+
+## API Reference
+
+### GET /health
+
+Проверка состояния сервиса.
+
+```bash
+curl http://localhost:8080/health
+# {"status":"ok"}
+```
+
+### GET /config
+
+Получить готовый AmneziaWG конфиг.
+
+Возвращает случайную identity + лучший по RTT endpoint.
+
+```bash
+curl http://localhost:8080/config
+# [Interface]
+# PrivateKey = ...
+# Address = 10.2.0.x/32, 2606:4700:110::/128
+# DNS = 1.1.1.1, 1.0.0.1
+# Jc = 4
+# Jmin = 40
+# Jmax = 70
+# H1 = 123456789
+# H2 = 987654321
+# H3 = 111222333
+# H4 = 444555666
+#
+# [Peer]
+# PublicKey = ...
+# Endpoint = 162.159.192.1:500
+# AllowedIPs = 0.0.0.0/0, ::/0
+```
+
+**Коды ответа:**
+- `200` — конфиг в теле ответа (`text/plain`)
+- `503` — нет доступных identity или endpoints
+
+### GET /api/identities
+
+Список всех зарегистрированных identity.
+
+```bash
+curl http://localhost:8080/api/identities
+```
+
+### GET /api/endpoints
+
+Список endpoints. Параметр `alive=true` фильтрует только живые.
+
+```bash
+curl "http://localhost:8080/api/endpoints?alive=true"
+```
+
+---
+
+## Принцип работы
+
+### Источники endpoints
+
+1. **Статические сиды** (50 конфигов) — встроенные AmneziaWG конфиги WARP
+2. **Динамический скан** — ipscanner по префиксам Cloudflare (162.159.192.0/24, 188.114.96.0/24 и др.) × ~55 портов
+3. **Свежая регистрация** — X25519 keypair → POST https://api.cloudflareclient.com/v0a4471/reg → новый endpoint на каждую регистрацию
+4. **Neighbor expansion** — расширение найденных IP соседями ±1..5
+
+### Жизненный цикл
+
+```
+Worker Register:
+  1. Проверяет кол-во identity в БД
+  2. Если < TARGET_COUNT → регистрирует новую через Cloudflare API
+  3. Сохраняет identity в БД
+
+Worker Scanner:
+  1. Берёт префиксы WARP + список портов
+  2. TCP-сканирует (IP × порт) с таймаутом 2 сек
+  3. Сохраняет живые endpoints с RTT в БД
+
+Worker Prober:
+  1. Берёт alive endpoints из БД (success_rate >= 50%)
+  2. Пробует WG handshake с первой доступной identity
+  3. Обновляет метрики (RTT, success/fail count)
+  4. Удаляет endpoints с fail_count > 10
+```
+
+---
+
+## Использование конфига
+
+Полученный `warp.conf` — стандартный AmneziaWG конфиг.
+
+### AmneziaVPN (Android / Windows / macOS / Linux)
+
+1. Откройте AmneziaVPN
+2. Импорт → Файл конфигурации → выберите `warp.conf`
+3. Подключитесь
+
+### WireGuard (native)
+
+```bash
+# Linux
+sudo wg-quick up warp.conf
+
+# Или через systemd
+sudo cp warp.conf /etc/wireguard/warp.conf
+sudo systemctl enable --now wg-quick@warp
+```
+
+### WireGuard App (iOS / Android)
+
+1. Откройте приложение WireGuard
+2. "+" → Импорт из файла → `warp.conf`
+3. Включите туннель
+
+---
+
+## Troubleshooting
+
+### 503 при получении /config
+
+**Причина:** Нет identity или нет живых endpoints.
+
+**Решение:**
+```bash
+# Проверить identity
+curl http://localhost:8080/api/identities
+
+# Проверить endpoints
+curl "http://localhost:8080/api/endpoints?alive=true"
+
+# Если пусто — подождите 1-2 минуты, пока worker register создаст identity
+# и worker scanner найдёт endpoints
+```
+
+### Cloudflare возвращает 429 (Too Many Requests)
+
+**Причина:** Слишком частые регистрации с одного IP.
+
+**Решение:**
+- Увеличьте интервал worker register: `INTERVAL=10m`
+- Используйте прокси / другой IP для регистрации
+- Worker register автоматически делает паузу между попытками
+
+### Endpoints не находятся
+
+**Причина:** Сетевые ограничения / файрвол.
+
+**Решение:**
+- Проверьте исходящие TCP соединения на порты 500, 854, 859, 864, 878, 880, 890, 891, 894, 903, 908, 928, 934, 939, 942, 943, 945, 946, 955, 968, 987, 988, 1002, 1010, 1014, 1018, 1070, 1074, 1180, 1387, 1701, 1843, 2371, 2408, 2506, 3138, 3476, 3581, 3854, 4177, 4198, 4233, 4500, 5279, 5956, 7103, 7152, 7156, 7281, 7559, 8319, 8742, 8854, 8886
+- Проверьте доступность api.cloudflareclient.com:443
+
+### Конфиг не подключается
+
+**Причина:** Endpoint недоступен / ключи не совпадают.
+
+**Решение:**
+- Получите новый конфиг: `curl http://localhost:8080/config > warp.conf`
+- Проверьте, что endpoint жив: `curl "http://localhost:8080/api/endpoints?alive=true"`
+
+---
+
+## Тестирование
+
+```bash
+# Unit тесты
+go test ./...
+
+# E2E тест (требует Docker)
+./tests/e2e_test.sh
+```
+
+E2E тест:
+1. Поднимает docker-compose
+2. Ждёт готовности API
+3. Ждёт появления identity
+4. Запрашивает /config
+5. Проверяет наличие обязательных полей
+
+---
+
+## Структура проекта
+
+```
+.
+├── cmd/
+│   ├── server/          # HTTP API сервер
+│   └── worker/          # Воркеры (register, scan, probe)
+├── internal/
+│   ├── api/             # HTTP handlers
+│   ├── crypto/          # X25519 keypair генерация
+│   ├── db/              # SQLite операции
+│   ├── scanner/         # IP scanner, WG probe
+│   └── warp/            # WARP регистрация, конфиг генерация
+├── tests/
+│   └── e2e_test.sh      # E2E тест
+├── schema.sql           # Схема БД
+├── Dockerfile           # Мультистадия сборка
+├── docker-compose.yml   # 4 сервиса
+├── tasks-bash.sh        # Bash-скрипт задач
+├── tasks-prompts.md     # Промпты для агентов
+└── warp-server-plan.md  # План задач
+```
+
+---
+
+## Лицензия
+
+MIT
