@@ -5,6 +5,7 @@ import (
   "net/http"
   "github.com/go-chi/chi/v5"
   "github.com/example/warp-server/internal/db"
+  "github.com/example/warp-server/internal/scanner"
 )
 
 func NewRouter(database *db.DB) http.Handler {
@@ -35,7 +36,15 @@ func IdentitiesHandler(database *db.DB) http.HandlerFunc {
 
 func EndpointsHandler(database *db.DB) http.HandlerFunc {
   return func(w http.ResponseWriter, r *http.Request) {
-    endpoints, err := database.GetAliveEndpoints(0)
+    var (
+      endpoints []*scanner.Endpoint
+      err       error
+    )
+    if r.URL.Query().Get("alive") == "true" {
+      endpoints, err = database.GetAliveEndpoints(0.5)
+    } else {
+      endpoints, err = database.GetAllEndpoints()
+    }
     if err != nil {
       http.Error(w, err.Error(), http.StatusInternalServerError)
       return

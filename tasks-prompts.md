@@ -242,6 +242,7 @@ Unit-тест: проверь, что возвращается >= 50 порто�
 - Структура:
   ```go
   type Endpoint struct {
+    ID   int64
     Host string
     Port int
     RTT  int // milliseconds
@@ -249,13 +250,13 @@ Unit-тест: проверь, что возвращается >= 50 порто�
   ```
 - Функция: `ScanEndpoints(ctx context.Context, prefixes []string, ports []int, maxResults int) ([]Endpoint, error)`
 
-Алгоритм (упрощённая версия):
-1. Для каждого CIDR в prefixes, разверни все IP
-2. Для каждого IP × каждый порт:
-   - Выполни TCP-connect с таймаутом 2 секунды
-   - Если успех → замерь RTT, добавь в результаты
-   - Если набрано maxResults → вернуть
-3. Отсортируй результаты по RTT (по возрастанию)
+Алгоритм (конкурентный, отменяемый):
+1. Разверни все IP из CIDR в prefixes × каждый порт → список задач
+2. Запусти пул из 256 goroutines-воркеров через канал задач + sync.WaitGroup
+3. В каждом воркере: TCP-connect через `&net.Dialer{Timeout: 2s}` + `DialContext(ctx, ...)`, проверяй `ctx.Err()` в цикле
+4. При успехе замерь RTT, добавь в результаты (защита от гонок — через mutex)
+5. Уважай ctx: общий дедлайн на весь скан (если у ctx нет дедлайна или он > 60 сек — оберни через context.WithTimeout(ctx, 60s))
+6. Отсортируй результаты по RTT (возрастание), ограничь maxResults
 
 Опционально: интегрируй github.com/bepass-org/warp-plus/ipscanner для полноценного ICMP пинга.
 
@@ -328,16 +329,26 @@ Unit-тест: mock UDP socket.
 - Файл: `internal/db/endpoints.go`
 - Методы (на структуре DB):
   - `UpsertEndpoint(e *scanner.Endpoint) error` - вставка/обновление endpoint (по host+port)
-  - `GetAliveEndpoints(minSuccessRate float64) ([]*scanner.Endpoint, error)` - получение живых endpoints (success_count/(success_count+fail_count) >= minSuccessRate, last_seen < 1 час назад), сортировка по rtt_ms
+  - `GetAllEndpoints() ([]*scanner.Endpoint, error)` - получение ВСЕХ endpoints (без фильтра по success rate), сортировка по rtt_ms; пустой результат — `[]*scanner.Endpoint{}`, а не nil
+  - `GetAliveEndpoints(minSuccessRate float64) ([]*scanner.Endpoint, error)` - получение живых endpoints, сортировка по rtt_ms; пустой результат — `[]*scanner.Endpoint{}`, а не nil
   - `UpdateEndpointMetrics(id int64, rtt int, success bool) error` - обновление метрик после пробы
+
+Семантика "живых": эндпоинт считается кандидатом, если он ещё не пробован (нулевые счётчики) ИЛИ его success-rate >= minSuccessRate:
+```sql
+WHERE datetime(last_seen) > datetime('now', '-1 hour')
+  AND (success_count + fail_count = 0
+       OR (success_count * 1.0) / (success_count + fail_count) >= ?)
+```
+Важно: формула `success_count/(success_count+fail_count) >= ?` при нулевых счётчиках даёт NULL (x/NULL) и выпадает из выборки — поэтому нулевые счётчики обрабатываются отдельной веткой OR.
 
 При Upsert: ON CONFLICT(host, port) DO UPDATE SET rtt_ms, last_seen.
 
 Integration-тест:
 - Вставь endpoint
 - Обнови метрики несколько раз (успех/неудача)
+- Убедись, что свежедобавленный (нулевые счётчики) попадает в alive
 - Получи alive endpoints с разными minSuccessRate
-- Проверь фильтрацию
+- Проверь фильтрацию и пустой результат `[]`
 
 Проверка: `go test ./internal/db`
 ```
@@ -448,7 +459,7 @@ API-тесты с httptest:
 
 - Файл: `internal/api/endpoints.go`
 - Эндпоинты:
-  - GET /api/endpoints?alive=true → JSON массив endpoints (фильтр по alive опционален)
+  - GET /api/endpoints → JSON массив всех endpoints (без параметра); с `?alive=true` — только живые (GetAliveEndpoints(0.5)); пустой результат — `[]`, а не `null`
   - POST /api/endpoints → добавляет endpoint вручную (JSON body: {host, port, rtt})
   - PATCH /api/endpoints/:id → обновляет метрики (JSON body: {rtt, success})
 
@@ -456,7 +467,7 @@ API-тесты с httptest:
 
 API-тесты с httptest:
 - Добавь endpoint через POST
-- Получи список через GET
+- Получи список через GET (пустой список должен быть `[]`, не null)
 - Обнови метрики через PATCH
 - Проверь фильтр ?alive=true
 

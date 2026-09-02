@@ -81,22 +81,25 @@ func MaintainIdentityPool(ctx context.Context, database *db.DB, targetCount int,
 func ScanPeriodically(ctx context.Context, database *db.DB, interval time.Duration) {
   run := func() {
     log.Println("Starting endpoint scan")
-    
+
+    scanCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+    defer cancel()
+
     prefixes := warp.WarpPrefixes()
     ports := warp.WarpPorts()
-    
-    endpoints, err := scanner.ScanEndpoints(ctx, prefixes, ports, 50)
+
+    endpoints, err := scanner.ScanEndpoints(scanCtx, prefixes, ports, 50)
     if err != nil {
       log.Printf("Scan failed: %v", err)
       return
     }
-    
+
     for _, ep := range endpoints {
       if err := database.UpsertEndpoint(&ep); err != nil {
         log.Printf("Failed to save endpoint: %v", err)
       }
     }
-    
+
     log.Printf("Scan complete: %d endpoints found", len(endpoints))
   }
 
@@ -136,7 +139,11 @@ func ProbeEndpointsPeriodically(ctx context.Context, database *db.DB, interval t
     for _, ep := range endpoints {
       rtt, err := scanner.ProbeEndpoint(ctx, *ep, keys)
       success := err == nil
-      
+
+      if err := database.UpdateEndpointMetrics(ep.ID, rtt, success); err != nil {
+        log.Printf("Failed to update metrics for %s:%d: %v", ep.Host, ep.Port, err)
+      }
+
       if success {
         log.Printf("Probed %s:%d - RTT %dms", ep.Host, ep.Port, rtt)
       }
