@@ -12,7 +12,7 @@ func (db *DB) UpsertEndpoint(e *scanner.Endpoint) error {
     ON CONFLICT(host, port) DO UPDATE SET
       rtt_ms = excluded.rtt_ms,
       last_seen = excluded.last_seen`,
-    e.Host, e.Port, e.RTT, time.Now(),
+    e.Host, e.Port, e.RTT, nowSQL(),
   )
   return err
 }
@@ -64,12 +64,21 @@ func (db *DB) UpdateEndpointMetrics(id int64, rtt int, success bool) error {
 
   if success {
     query = "UPDATE endpoints SET rtt_ms = ?, success_count = success_count + 1, last_checked = ? WHERE id = ?"
-    args = []interface{}{rtt, time.Now(), id}
+    args = []interface{}{rtt, nowSQL(), id}
   } else {
     query = "UPDATE endpoints SET fail_count = fail_count + 1, last_checked = ? WHERE id = ?"
-    args = []interface{}{time.Now(), id}
+    args = []interface{}{nowSQL(), id}
   }
 
   _, err := db.conn.Exec(query, args...)
   return err
+}
+
+// nowSQL returns the current time formatted so SQLite's datetime() and
+// strftime() can parse it (datetime('now') format in UTC). time.Now()'s raw
+// String() form (with " +0000 UTC" and a monotonic clock suffix) is not
+// understood by SQLite's datetime() and would silently break time-range
+// comparisons.
+func nowSQL() string {
+  return time.Now().UTC().Format("2006-01-02 15:04:05")
 }

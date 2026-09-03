@@ -85,10 +85,23 @@ func ScanPeriodically(ctx context.Context, database *db.DB, interval time.Durati
     scanCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
     defer cancel()
 
+    identities, _ := database.GetIdentities()
+    if len(identities) == 0 {
+      log.Println("No identity available for scanning, skipping")
+      return
+    }
+    identity := identities[0]
+
     prefixes := warp.WarpPrefixes()
     ports := warp.WarpPorts()
 
-    endpoints, err := scanner.ScanEndpoints(scanCtx, prefixes, ports, 50)
+    keys := &scanner.IdentityKeys{
+      PrivateKey:    identity.PrivateKey,
+      PublicKey:     identity.PublicKey,
+      PeerPublicKey: identity.PeerPublicKey,
+    }
+
+    endpoints, err := scanner.ScanEndpoints(scanCtx, prefixes, ports, 50, keys)
     if err != nil {
       log.Printf("Scan failed: %v", err)
       return
@@ -132,8 +145,9 @@ func ProbeEndpointsPeriodically(ctx context.Context, database *db.DB, interval t
     
     identity := identities[0]
     keys := &scanner.IdentityKeys{
-      PrivateKey: identity.PrivateKey,
-      PublicKey:  identity.PublicKey,
+      PrivateKey:    identity.PrivateKey,
+      PublicKey:     identity.PublicKey,
+      PeerPublicKey: identity.PeerPublicKey,
     }
     
     for _, ep := range endpoints {
