@@ -1,4 +1,4 @@
-# WARP Server
+# WARP Server (upd 03-09-2026)
 
 Автономный сервер для генерации WARP/AmneziaWG конфигураций.
 
